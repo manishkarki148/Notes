@@ -1,0 +1,241 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'VPC with Public and Private Subnets using IPAM with automatic subnet division'
+
+Parameters:
+  VpcName:
+    Description: Name of the VPC
+    Type: String
+    
+  IpamPoolId:
+    Description: ID of the IPAM pool to use for VPC
+    Type: String
+    
+  NetmaskLength:
+    Description: Netmask length for the VPC CIDR (e.g., 16 for a /16 CIDR)
+    Type: Number
+    Default: 16
+    MinValue: 16
+    MaxValue: 28
+    
+  PublicSubnet1Name:
+    Description: Name of Public Subnet 1 (ap-southeast-2a)
+    Type: String
+    Default: Public-Subnet-1
+    
+  PublicSubnet2Name:
+    Description: Name of Public Subnet 2 (ap-southeast-2b)
+    Type: String
+    Default: Public-Subnet-2
+    
+  PrivateSubnet1Name:
+    Description: Name of Private Subnet 1 (ap-southeast-2a)
+    Type: String
+    Default: Private-Subnet-1
+    
+  PrivateSubnet2Name:
+    Description: Name of Private Subnet 2 (ap-southeast-2b)
+    Type: String
+    Default: Private-Subnet-2
+    
+  CreateIGW:
+    Description: Do you want to create an Internet Gateway?
+    Type: String
+    AllowedValues: ['yes', 'no']
+    Default: 'yes'
+    
+  CreateNATGateway:
+    Description: Do you want to create a NAT Gateway?
+    Type: String
+    AllowedValues: ['yes', 'no']
+    Default: 'yes'
+
+Conditions:
+  ShouldCreateIGW: !Equals [!Ref CreateIGW, 'yes']
+  ShouldCreateNAT: !Equals [!Ref CreateNATGateway, 'yes']
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      Ipv4IpamPoolId: !Ref IpamPoolId
+      Ipv4NetmaskLength: !Ref NetmaskLength
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Ref VpcName
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    DependsOn: VPC
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: ap-southeast-2a
+      CidrBlock: !Select [0, !Cidr [!GetAtt VPC.CidrBlock, 4, 2]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Ref PublicSubnet1Name
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    DependsOn: VPC
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: ap-southeast-2b
+      CidrBlock: !Select [1, !Cidr [!GetAtt VPC.CidrBlock, 4, 2]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Ref PublicSubnet2Name
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    DependsOn: VPC
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: ap-southeast-2a
+      CidrBlock: !Select [2, !Cidr [!GetAtt VPC.CidrBlock, 4, 2]]
+      Tags:
+        - Key: Name
+          Value: !Ref PrivateSubnet1Name
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    DependsOn: VPC
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: ap-southeast-2b
+      CidrBlock: !Select [3, !Cidr [!GetAtt VPC.CidrBlock, 4, 2]]
+      Tags:
+        - Key: Name
+          Value: !Ref PrivateSubnet2Name
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Condition: ShouldCreateIGW
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${VpcName}-IGW
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Condition: ShouldCreateIGW
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${VpcName}-Public-RT
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Condition: ShouldCreateIGW
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  NATGatewayEIP:
+    Type: AWS::EC2::EIP
+    Condition: ShouldCreateNAT
+    Properties:
+      Domain: vpc
+
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Condition: ShouldCreateNAT
+    Properties:
+      AllocationId: !GetAtt NATGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub ${VpcName}-NAT
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${VpcName}-Private-RT
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Condition: ShouldCreateNAT
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+Outputs:
+  VpcId:
+    Description: VPC ID
+    Value: !Ref VPC
+    
+  VpcCidr:
+    Description: VPC CIDR Block
+    Value: !GetAtt VPC.CidrBlock
+    
+  PublicSubnet1Id:
+    Description: Public Subnet 1 ID
+    Value: !Ref PublicSubnet1
+    
+  PublicSubnet2Id:
+    Description: Public Subnet 2 ID
+    Value: !Ref PublicSubnet2
+    
+  PrivateSubnet1Id:
+    Description: Private Subnet 1 ID
+    Value: !Ref PrivateSubnet1
+    
+  PrivateSubnet2Id:
+    Description: Private Subnet 2 ID
+    Value: !Ref PrivateSubnet2
+    
+  PublicSubnet1Cidr:
+    Description: Public Subnet 1 CIDR
+    Value: !GetAtt PublicSubnet1.CidrBlock
+    
+  PublicSubnet2Cidr:
+    Description: Public Subnet 2 CIDR
+    Value: !GetAtt PublicSubnet2.CidrBlock
+    
+  PrivateSubnet1Cidr:
+    Description: Private Subnet 1 CIDR
+    Value: !GetAtt PrivateSubnet1.CidrBlock
+    
+  PrivateSubnet2Cidr:
+    Description: Private Subnet 2 CIDR
+    Value: !GetAtt PrivateSubnet2.CidrBlock
